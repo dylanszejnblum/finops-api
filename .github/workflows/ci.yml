@@ -1,0 +1,50 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      MERCURY_SANDBOX_TOKEN: ${{ secrets.MERCURY_SANDBOX_TOKEN }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: p }
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec eslint "{src,test}/**/*.ts"
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: e2e (no DB, no bank)
+        run: pnpm test:e2e
+
+      - name: e2e (Postgres + mock Mercury)
+        run: |
+          node test/mock-mercury.mjs &
+          pnpm test:e2e
+        env:
+          DATABASE_URL: postgres://postgres:p@localhost:5432/postgres
+          MERCURY_API_TOKEN: secret-token:mock
+          MERCURY_BASE_URL: http://127.0.0.1:4010/api/v1
+
+      - name: e2e (Mercury sandbox)
+        if: ${{ env.MERCURY_SANDBOX_TOKEN != '' }}
+        run: pnpm test:e2e
+        env:
+          MERCURY_API_TOKEN: ${{ secrets.MERCURY_SANDBOX_TOKEN }}
+          MERCURY_BASE_URL: https://api-sandbox.mercury.com/api/v1
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t finops-api .
