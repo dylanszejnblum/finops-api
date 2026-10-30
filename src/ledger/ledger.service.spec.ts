@@ -174,6 +174,24 @@ describe('LedgerService sync', () => {
     );
   });
 
+  it('alerts on money out to counterparties never seen before, not on backfill', async () => {
+    const { svc, repo, banks } = setup([], 10);
+    repo.find.mockResolvedValueOnce([{ counterparty: 'AWS' } as ExpenseEntity]);
+    banks.fanOut.mockResolvedValue({
+      items: [
+        { ...expense, id: 'a', counterparty: 'AWS' },
+        { ...expense, id: 'b', counterparty: 'Shady LLC' },
+      ],
+      errors: [],
+    });
+    expect((await svc.sync()).newCounterparties).toBe(1);
+
+    const empty = setup([], 0);
+    empty.banks.fanOut.mockResolvedValue({ items: [expense], errors: [] });
+    expect((await empty.svc.sync()).newCounterparties).toBe(0);
+    expect(empty.repo.find).not.toHaveBeenCalled();
+  });
+
   it('uses the shorter lookback once data exists, and refuses overlapping runs', async () => {
     const { svc, banks } = setup([], 10);
     let release!: () => void;

@@ -152,6 +152,8 @@ All configuration comes from environment variables (see `.env.example`).
 | `SYNC_INTERVAL_MINUTES` | `30` | Background ledger sync; `0` disables it |
 | `SYNC_LOOKBACK_DAYS` | `30` | Window re-synced on each run (catches status changes such as pending → sent) |
 | `SYNC_BACKFILL_DAYS` | `365` | Window for the first sync on an empty table |
+| `ALERT_WEBHOOK_URL` | – | Slack-compatible webhook (`{"text": …}`). Each sync alerts on money out to counterparties never seen before (e.g. a fraudulent ACH debit). Always logged as a warning too. Skipped on the first backfill. For Telegram use `https://api.telegram.org/bot<TOKEN>/sendMessage`. |
+| `ALERT_TELEGRAM_CHAT_ID` | – | Set it to send alerts to Telegram (adds `chat_id` to the payload) |
 
 ---
 
