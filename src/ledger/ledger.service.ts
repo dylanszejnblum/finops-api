@@ -91,7 +91,8 @@ export class LedgerService implements OnApplicationBootstrap, OnModuleDestroy {
     this.running = true;
     try {
       // First run on an empty table backfills further so reports have history.
-      const days = (await this.repo.count())
+      const isEmpty = !(await this.repo.count());
+      const days = !isEmpty
         ? Number(this.config.get('SYNC_LOOKBACK_DAYS', 30))
         : Number(this.config.get('SYNC_BACKFILL_DAYS', 365));
       const start =
@@ -102,15 +103,70 @@ export class LedgerService implements OnApplicationBootstrap, OnModuleDestroy {
         c.allExpenses({ start, end }),
       );
       const rows = items.map(toEntity);
+      // Checked before the upsert, otherwise every counterparty is already "known".
+      const fresh = isEmpty ? [] : await this.newCounterparties(rows);
       for (let i = 0; i < rows.length; i += 500)
         await this.repo.upsert(rows.slice(i, i + 500), ['id']);
+      if (fresh.length) await this.alert(fresh);
 
       this.logger.log(
         `Synced ${rows.length} expenses ${start} → ${end}, ${errors.length} bank errors`,
       );
-      return { synced: rows.length, start, end, errors };
+      return {
+        synced: rows.length,
+        newCounterparties: fresh.length,
+        start,
+        end,
+        errors,
+      };
     } finally {
       this.running = false;
+    }
+  }
+
+  // Money out to someone never paid before: our read-only stand-in for ACH debit blocking,
+  // which Mercury's API doesn't expose (that lives in the Mercury dashboard).
+  // A counterparty with no stored row also means every row for it is new.
+  // ponytail: exact string match; Postgres is case-sensitive, MySQL usually isn't. Normalize names if that causes noise.
+  private async newCounterparties(rows: ExpenseEntity[]) {
+    const names = [...new Set(rows.map((r) => r.counterparty))];
+    const known = new Set<string>();
+    for (let i = 0; i < names.length; i += 500) {
+      const seen = await this.repo.find({
+        where: { counterparty: In(names.slice(i, i + 500)) },
+        select: { counterparty: true },
+      });
+      for (const s of seen) known.add(s.counterparty);
+    }
+    return rows.filter((r) => !known.has(r.counterparty));
+  }
+
+  private async alert(rows: ExpenseEntity[]) {
+    const text = [
+      `⚠️ ${rows.length} expense(s) to new counterparties:`,
+      ...rows.map(
+        (r) =>
+          `• ${r.amount} ${r.currency} → ${r.counterparty} (${r.bank}, ${r.kind}, ${r.status}, ${r.createdAt.toISOString()})`,
+      ),
+    ].join('\n');
+    this.logger.warn(text);
+    const url = this.config.get<string>('ALERT_WEBHOOK_URL');
+    if (!url) return;
+    // Telegram's sendMessage takes the same `text` plus a chat_id; its limit is 4096 chars.
+    const chatId = this.config.get<string>('ALERT_TELEGRAM_CHAT_ID');
+    // Alerting must never fail the sync: the rows are already stored.
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          chatId ? { chat_id: chatId, text: text.slice(0, 4000) } : { text },
+        ),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) this.logger.error(`Alert webhook responded ${res.status}`);
+    } catch (e) {
+      this.logger.error(`Alert webhook failed: ${String(e)}`);
     }
   }
 
